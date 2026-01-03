@@ -1,21 +1,14 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { initializeApp } from "firebase/app";
-import {
-  getAuth,
-  signInAnonymously,
-  onAuthStateChanged,
-  signInWithCustomToken,
-} from "firebase/auth";
+import { getAuth, signInAnonymously, onAuthStateChanged } from "firebase/auth";
 import {
   getFirestore,
   collection,
   addDoc,
   onSnapshot,
-  query,
   serverTimestamp,
   doc,
-  setDoc,
-  getDoc,
+  runTransaction,
 } from "firebase/firestore";
 import {
   Music,
@@ -27,9 +20,6 @@ import {
   UserPlus,
   Star,
   QrCode,
-  LogOut,
-  Users,
-  Activity,
   Crown,
 } from "lucide-react";
 
@@ -42,60 +32,54 @@ const firebaseConfig = {
   messagingSenderId: "336860212166",
   appId: "1:336860212166:web:0f21ddd399efff624c60c7",
 };
+
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
+
+// Change this string if you want to reset the database (e.g. 'eventi-fortango-v2')
 const appId = "eventi-fortango";
 
-// --- Constants ---
+// --- Constants (Translated to English) ---
 const CATEGORIES = [
   {
     id: "musicality",
-    label: "Musicalità",
+    label: "Musicality",
     icon: Music,
     color: "text-amber-400",
   },
   {
     id: "connection",
-    label: "Connessione",
+    label: "Connection",
     icon: Heart,
     color: "text-red-500",
-  }, // Keep heart red for semantic meaning, or make gold if strictly requested
+  },
   {
     id: "technique",
-    label: "Tecnica",
+    label: "Technique",
     icon: Footprints,
     color: "text-stone-400",
   },
   {
     id: "elegance",
-    label: "Eleganza",
+    label: "Elegance",
     icon: Sparkles,
     color: "text-yellow-300",
   },
   {
     id: "navigation",
-    label: "Pista (Floorcraft)",
+    label: "Floorcraft",
     icon: Compass,
     color: "text-sky-400",
   },
 ];
 
+// Added 'prefix' for code generation (L001, F001, D001)
 const ROLES = [
-  { id: "leader", label: "Leader" },
-  { id: "follower", label: "Follower" },
-  { id: "both", label: "Entrambi" },
+  { id: "leader", label: "Leader", prefix: "L" },
+  { id: "follower", label: "Follower", prefix: "F" },
+  { id: "both", label: "Double Role", prefix: "D" },
 ];
-
-// --- Helper Functions ---
-const generateCode = () => {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let code = "";
-  for (let i = 0; i < 4; i++) {
-    code += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return code;
-};
 
 // --- Components ---
 
@@ -138,23 +122,60 @@ const Onboarding = ({ onComplete, userId }) => {
     if (!name.trim()) return;
     setIsSubmitting(true);
 
-    const code = generateCode();
-
     try {
-      await setDoc(
-        doc(db, "artifacts", appId, "public", "data", "participants", userId),
-        {
+      // Transaction to ensure sequential IDs (L001, L002...)
+      await runTransaction(db, async (transaction) => {
+        // 1. Reference to the counter document
+        const counterRef = doc(db, "artifacts", appId, "public", "counters");
+        const counterDoc = await transaction.get(counterRef);
+
+        // 2. Determine current count
+        let currentCount = 0;
+        if (counterDoc.exists()) {
+          const data = counterDoc.data();
+          // Gets the count for the specific role (e.g., 'leaderCount')
+          currentCount = data[`${role}Count`] || 0;
+        }
+
+        const newCount = currentCount + 1;
+
+        // 3. Generate Code (Prefix + 3 digits, e.g. L001)
+        const selectedRoleObj = ROLES.find((r) => r.id === role);
+        const prefix = selectedRoleObj ? selectedRoleObj.prefix : "X";
+        const formattedNumber = String(newCount).padStart(3, "0");
+        const code = `${prefix}${formattedNumber}`;
+
+        // 4. Update the counter in DB
+        transaction.set(
+          counterRef,
+          { [`${role}Count`]: newCount },
+          { merge: true }
+        );
+
+        // 5. Create the User Profile
+        const userRef = doc(
+          db,
+          "artifacts",
+          appId,
+          "public",
+          "data",
+          "participants",
+          userId
+        );
+        transaction.set(userRef, {
           name: name.trim(),
           role,
           code,
           userId,
           createdAt: serverTimestamp(),
-        }
-      );
+        });
+      });
+
       onComplete();
     } catch (error) {
       console.error("Error creating profile:", error);
       setIsSubmitting(false);
+      alert("Connection error. Please try again.");
     }
   };
 
@@ -168,26 +189,27 @@ const Onboarding = ({ onComplete, userId }) => {
           <h1 className="text-4xl font-serif font-bold text-transparent bg-clip-text bg-gradient-to-r from-amber-300 to-yellow-600 mb-2">
             PlayForTango
           </h1>
+          <p className="text-neutral-500 text-sm">Join the event</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-6">
           <div>
             <label className="block text-sm font-medium text-amber-500/80 mb-1">
-              Il tuo Nome
+              Your Name
             </label>
             <input
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
               className="w-full bg-black border border-neutral-700 rounded-lg px-4 py-3 text-white focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none transition-all placeholder-neutral-700"
-              placeholder="Es. Mario Rossi"
+              placeholder="e.g. Mario Rossi"
               required
             />
           </div>
 
           <div>
             <label className="block text-sm font-medium text-amber-500/80 mb-3">
-              Ruolo
+              Your Role
             </label>
             <div className="grid grid-cols-3 gap-2">
               {ROLES.map((r) => (
@@ -212,7 +234,7 @@ const Onboarding = ({ onComplete, userId }) => {
             disabled={isSubmitting}
             className="w-full bg-gradient-to-r from-amber-500 via-yellow-500 to-amber-600 hover:brightness-110 text-black font-bold py-4 rounded-xl shadow-lg transform transition active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed mt-4"
           >
-            {isSubmitting ? "Salvataggio..." : "Entra in Pista"}
+            {isSubmitting ? "Joining..." : "Join the Floor"}
           </button>
         </form>
       </div>
@@ -249,15 +271,15 @@ const VotingScreen = ({
 
     // Validation
     if (!foundPartner) {
-      setError("Codice non trovato.");
+      setError("Code not found.");
       return;
     }
     if (foundPartner.userId === currentUserProfile.userId) {
-      setError("Non puoi votare te stesso!");
+      setError("You cannot vote for yourself!");
       return;
     }
     if (Object.values(scores).some((s) => s === 0)) {
-      setError("Per favore dai un voto a tutte le categorie.");
+      setError("Please rate all categories.");
       return;
     }
 
@@ -268,7 +290,7 @@ const VotingScreen = ({
         collection(db, "artifacts", appId, "public", "data", "votes"),
         {
           voterId: currentUserProfile.userId,
-          targetId: foundPartner.userId, // Storing ID is safer than code for uniqueness
+          targetId: foundPartner.userId,
           targetCode: foundPartner.code,
           scores,
           timestamp: serverTimestamp(),
@@ -277,7 +299,7 @@ const VotingScreen = ({
       onVoteSuccess();
     } catch (err) {
       console.error(err);
-      setError("Errore nel salvataggio del voto.");
+      setError("Error saving vote.");
       setIsSubmitting(false);
     }
   };
@@ -287,20 +309,20 @@ const VotingScreen = ({
       <div className="bg-neutral-900 rounded-2xl p-6 border border-neutral-800 shadow-2xl shadow-black">
         <div className="flex justify-between items-center mb-6">
           <h2 className="text-xl font-bold text-amber-50 flex items-center gap-2">
-            <UserPlus className="text-amber-500" /> Vota Partner
+            <UserPlus className="text-amber-500" /> Vote Partner
           </h2>
           <button
             onClick={onCancel}
             className="text-neutral-500 hover:text-white"
           >
-            Chiudi
+            Close
           </button>
         </div>
 
         {/* Code Input */}
         <div className="mb-8">
           <label className="block text-amber-500/60 text-xs uppercase tracking-widest mb-2 text-center">
-            Codice Partner
+            Partner Code
           </label>
           <input
             type="text"
@@ -311,12 +333,12 @@ const VotingScreen = ({
               setError("");
             }}
             className="w-full bg-black text-center text-4xl font-mono tracking-widest text-white border-2 border-neutral-800 rounded-xl py-4 focus:border-amber-500 outline-none uppercase placeholder-neutral-800 transition-colors"
-            placeholder="ABCD"
+            placeholder="L001"
           />
           {foundPartner && (
             <div className="mt-2 text-center text-amber-400 font-medium animate-pulse border border-amber-900/30 bg-amber-900/10 rounded-lg p-2">
               <span className="text-xs text-amber-500/70 block uppercase">
-                Partner trovato
+                Partner found
               </span>
               {foundPartner.name} (
               {ROLES.find((r) => r.id === foundPartner.role)?.label})
@@ -340,7 +362,7 @@ const VotingScreen = ({
                 onChange={(val) =>
                   setScores((prev) => ({ ...prev, [cat.id]: val }))
                 }
-                colorClass={cat.color} // Keep original colors for clarity, or use text-amber-500 for strict theme
+                colorClass={cat.color}
               />
             </div>
           ))}
@@ -357,7 +379,7 @@ const VotingScreen = ({
           disabled={isSubmitting}
           className="w-full mt-8 bg-gradient-to-r from-amber-600 to-yellow-600 hover:from-amber-500 hover:to-yellow-500 text-black font-bold py-4 rounded-xl shadow-lg transform transition active:scale-95 disabled:opacity-50"
         >
-          {isSubmitting ? "Invio in corso..." : "Invia Valutazione"}
+          {isSubmitting ? "Sending..." : "Submit Vote"}
         </button>
       </div>
     </div>
@@ -372,13 +394,12 @@ const Dashboard = ({ user, participants, votes }) => {
 
   const handleVoteSuccess = () => {
     setView("home");
-    setSuccessMsg("Voto registrato! Grazie.");
+    setSuccessMsg("Vote registered! Thank you.");
     setTimeout(() => setSuccessMsg(""), 4000);
   };
 
   // --- Calculations for Rankings ---
   const rankings = useMemo(() => {
-    // 1. Initialize stats for each participant
     const stats = {};
     Object.keys(participants).forEach((uid) => {
       stats[uid] = {
@@ -397,7 +418,6 @@ const Dashboard = ({ user, participants, votes }) => {
       };
     });
 
-    // 2. Aggregate votes
     votes.forEach((vote) => {
       const targetId = vote.targetId;
       if (stats[targetId]) {
@@ -406,7 +426,6 @@ const Dashboard = ({ user, participants, votes }) => {
 
         Object.keys(vote.scores).forEach((cat) => {
           if (stats[targetId].scores[cat]) {
-            // safety check
             stats[targetId].scores[cat].total += vote.scores[cat];
             stats[targetId].scores[cat].count += 1;
           }
@@ -414,7 +433,6 @@ const Dashboard = ({ user, participants, votes }) => {
       }
     });
 
-    // 3. Compute Averages and sort
     const computeList = (category) => {
       return Object.values(stats)
         .map((p) => ({
@@ -425,7 +443,7 @@ const Dashboard = ({ user, participants, votes }) => {
               : 0,
           count: p.scores[category].count,
         }))
-        .filter((p) => p.count > 0) // Only show people with votes
+        .filter((p) => p.count > 0)
         .sort((a, b) => b.avg - a.avg);
     };
 
@@ -450,16 +468,13 @@ const Dashboard = ({ user, participants, votes }) => {
   // Sub-component for Rankings
   const RankingList = () => {
     const [activeTab, setActiveTab] = useState("popularity");
-
-    // Sort logic for display
     const currentList =
       activeTab === "popularity" ? rankings.popularity : rankings[activeTab];
-    const activeCategory = CATEGORIES.find((c) => c.id === activeTab);
 
     return (
       <div className="pb-24 animate-in fade-in zoom-in-95 duration-300">
         <h2 className="text-2xl font-serif text-amber-500 mb-6 flex items-center gap-2">
-          <Trophy className="text-yellow-500" /> Classifiche
+          <Trophy className="text-yellow-500" /> Rankings
         </h2>
 
         {/* Tabs */}
@@ -493,7 +508,7 @@ const Dashboard = ({ user, participants, votes }) => {
         <div className="space-y-3">
           {currentList.length === 0 ? (
             <div className="text-center text-neutral-600 py-12 bg-neutral-900/30 rounded-xl border border-neutral-800 border-dashed">
-              Nessun dato
+              No data yet
             </div>
           ) : (
             currentList.map((p, idx) => (
@@ -545,7 +560,7 @@ const Dashboard = ({ user, participants, votes }) => {
                       <span className="text-xl font-bold text-white">
                         {p.uniqueCount}
                       </span>
-                      <span className="text-xs text-neutral-500">Partner</span>
+                      <span className="text-xs text-neutral-500">Partners</span>
                     </div>
                   ) : (
                     <div className="flex flex-col items-end">
@@ -554,7 +569,7 @@ const Dashboard = ({ user, participants, votes }) => {
                         <Star size={14} fill="currentColor" />
                       </div>
                       <span className="text-xs text-neutral-500">
-                        {p.count} voti
+                        {p.count} votes
                       </span>
                     </div>
                   )}
@@ -602,13 +617,13 @@ const Dashboard = ({ user, participants, votes }) => {
                 <QrCode size={120} />
               </div>
               <h3 className="text-amber-500/60 uppercase text-xs font-bold tracking-[0.2em] mb-4">
-                Il tuo codice
+                Your Code
               </h3>
               <div className="text-6xl font-black text-transparent bg-clip-text bg-gradient-to-b from-amber-100 to-amber-400 font-mono tracking-widest my-4 drop-shadow-sm">
                 {myProfile.code}
               </div>
               <p className="text-neutral-500 text-sm max-w-xs mx-auto">
-                Condividilo dopo il ballo.
+                Share this code after the dance.
               </p>
             </div>
 
@@ -622,7 +637,7 @@ const Dashboard = ({ user, participants, votes }) => {
                   <UserPlus size={28} />
                 </div>
                 <span className="font-bold text-neutral-200 group-hover:text-amber-100">
-                  Vota Partner
+                  Vote Partner
                 </span>
               </button>
 
@@ -634,7 +649,7 @@ const Dashboard = ({ user, participants, votes }) => {
                   <Trophy size={28} />
                 </div>
                 <span className="font-bold text-neutral-200 group-hover:text-amber-100">
-                  Classifiche
+                  Rankings
                 </span>
               </button>
             </div>
@@ -649,7 +664,7 @@ const Dashboard = ({ user, participants, votes }) => {
                       : 0}
                   </div>
                   <div className="text-[10px] text-neutral-500 uppercase tracking-wider">
-                    Ballerini
+                    Dancers
                   </div>
                 </div>
                 <div className="w-px h-8 bg-neutral-800"></div>
@@ -658,7 +673,7 @@ const Dashboard = ({ user, participants, votes }) => {
                     {votes.length}
                   </div>
                   <div className="text-[10px] text-neutral-500 uppercase tracking-wider">
-                    Voti
+                    Votes
                   </div>
                 </div>
                 <div className="w-px h-8 bg-neutral-800"></div>
@@ -710,10 +725,10 @@ export default function App() {
   // 1. Auth Init
   useEffect(() => {
     const initAuth = async () => {
-      if (typeof __initial_auth_token !== "undefined" && __initial_auth_token) {
-        await signInWithCustomToken(auth, __initial_auth_token);
-      } else {
+      try {
         await signInAnonymously(auth);
+      } catch (error) {
+        console.error("Login failed", error);
       }
     };
     initAuth();
