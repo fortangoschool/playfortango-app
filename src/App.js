@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { initializeApp } from "firebase/app";
-import { getAuth, signInAnonymously, onAuthStateChanged } from "firebase/auth";
+import {
+  getAuth,
+  signInAnonymously,
+  onAuthStateChanged,
+} from "firebase/auth";
 import {
   getFirestore,
   collection,
@@ -74,7 +78,6 @@ const CATEGORIES = [
   },
 ];
 
-// Added 'prefix' for code generation (L001, F001, D001)
 const ROLES = [
   { id: "leader", label: "Leader", prefix: "L" },
   { id: "follower", label: "Follower", prefix: "F" },
@@ -133,26 +136,25 @@ const Onboarding = ({ onComplete, userId }) => {
         let currentCount = 0;
         if (counterDoc.exists()) {
           const data = counterDoc.data();
-          // Gets the count for the specific role (e.g., 'leaderCount')
           currentCount = data[`${role}Count`] || 0;
         }
 
         const newCount = currentCount + 1;
 
-        // 3. Generate Code (Prefix + 3 digits, e.g. L001)
+        // 3. Generate Code
         const selectedRoleObj = ROLES.find((r) => r.id === role);
         const prefix = selectedRoleObj ? selectedRoleObj.prefix : "X";
         const formattedNumber = String(newCount).padStart(3, "0");
         const code = `${prefix}${formattedNumber}`;
 
-        // 4. Update the counter in DB
+        // 4. Update the counter
         transaction.set(
           counterRef,
           { [`${role}Count`]: newCount },
           { merge: true }
         );
 
-        // 5. Create the User Profile
+        // 5. Create Profile
         const userRef = doc(
           db,
           "artifacts",
@@ -245,6 +247,7 @@ const Onboarding = ({ onComplete, userId }) => {
 const VotingScreen = ({
   currentUserProfile,
   participants,
+  votes, // Added votes prop to check for duplicates
   onVoteSuccess,
   onCancel,
 }) => {
@@ -269,17 +272,33 @@ const VotingScreen = ({
   const handleSubmit = async () => {
     setError("");
 
-    // Validation
+    // Validation 1: Partner exists
     if (!foundPartner) {
       setError("Code not found.");
       return;
     }
+
+    // Validation 2: Self voting
     if (foundPartner.userId === currentUserProfile.userId) {
       setError("You cannot vote for yourself!");
       return;
     }
+
+    // Validation 3: All categories scored
     if (Object.values(scores).some((s) => s === 0)) {
       setError("Please rate all categories.");
+      return;
+    }
+
+    // Validation 4: ALREADY VOTED CHECK
+    const alreadyVoted = votes.some(
+      (v) =>
+        v.voterId === currentUserProfile.userId &&
+        v.targetId === foundPartner.userId
+    );
+
+    if (alreadyVoted) {
+      setError("You have already voted for this partner.");
       return;
     }
 
@@ -387,7 +406,7 @@ const VotingScreen = ({
 };
 
 const Dashboard = ({ user, participants, votes }) => {
-  const [view, setView] = useState("home"); // home, vote, rankings
+  const [view, setView] = useState("home");
   const [successMsg, setSuccessMsg] = useState("");
 
   const myProfile = participants[user.uid];
@@ -444,7 +463,15 @@ const Dashboard = ({ user, participants, votes }) => {
           count: p.scores[category].count,
         }))
         .filter((p) => p.count > 0)
-        .sort((a, b) => b.avg - a.avg);
+        // MODIFICA QUI: Ordinamento per Media (desc) POI per Conteggio (desc)
+        .sort((a, b) => {
+           // 1. Confronta la media
+           const diff = b.avg - a.avg;
+           if (diff !== 0) return diff;
+           
+           // 2. Se media uguale, vince chi ha più voti
+           return b.count - a.count;
+        });
     };
 
     const popularityList = Object.values(stats)
@@ -694,6 +721,7 @@ const Dashboard = ({ user, participants, votes }) => {
           <VotingScreen
             currentUserProfile={myProfile}
             participants={participants}
+            votes={votes} // Passed votes to check logic
             onVoteSuccess={handleVoteSuccess}
             onCancel={() => setView("home")}
           />
